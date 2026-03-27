@@ -1,0 +1,70 @@
+{
+  "title": "Envoy Access Logs",
+  "uid": "envoy-logs",
+  "schemaVersion": 38,
+  "version": 1,
+  "refresh": "10s",
+  "panels": [
+    {
+      "type": "logs",
+      "title": "Envoy Access Logs",
+      "gridPos": { "x": 0, "y": 0, "w": 24, "h": 8 },
+      "id": 1,
+      "datasource": { "type": "loki", "uid": "loki" },
+      "targets": [
+        {
+          "expr": "{job=\"envoy\"}",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "showTime": true,
+        "wrapLogMessage": true,
+        "enableLogDetails": true
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Request Rate",
+      "gridPos": { "x": 0, "y": 8, "w": 12, "h": 6 },
+      "id": 2,
+      "datasource": { "type": "loki", "uid": "loki" },
+      "targets": [
+        {
+          "expr": "sum(rate({job=\"envoy\"} [1m]))",
+          "refId": "A",
+          "legendFormat": "req/s"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "HTTP Status Codes",
+      "gridPos": { "x": 12, "y": 8, "w": 12, "h": 6 },
+      "id": 3,
+      "datasource": { "type": "loki", "uid": "loki" },
+      "targets": [
+        {
+          "expr": "sum by (response_code) (rate({job=\"envoy\"} [1m]))",
+          "refId": "A",
+          "legendFormat": "{{response_code}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Top Paths",
+      "gridPos": { "x": 0, "y": 14, "w": 24, "h": 6 },
+      "id": 4,
+      "datasource": { "type": "loki", "uid": "loki" },
+      "targets": [
+        {
+          "expr": "topk(5, sum by (path) (rate({job=\"envoy\"} [1m])))",
+          "refId": "A",
+          "legendFormat": "{{path}}"
+        }
+      ]
+    }
+  ],
+  "time": { "from": "now-1h", "to": "now" }
+}

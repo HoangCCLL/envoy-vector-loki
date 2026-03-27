@@ -1,0 +1,14 @@
+# Python
+.python-version
+.venv/
+__pycache__/
+*.pyc
+
+# TLS certs
+certs/
+
+# Rendered configs (generated from *.tmpl — do not commit)
+envoy/envoy.yaml
+
+# Local env overrides
+.env.local

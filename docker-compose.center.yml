@@ -1,0 +1,49 @@
+# Center stack — deploy once, shared by all edge nodes
+# Network: tạo envoy_observability, edge nodes join vào đây
+
+networks:
+  observability:
+    name: envoy_observability
+
+services:
+
+  loki:
+    image: grafana/loki:${LOKI_VERSION}
+    restart: unless-stopped
+    ports:
+      - "${LOKI_PORT}:3100"
+    volumes:
+      - ./loki/config.yaml:/etc/loki/local-config.yaml:ro
+      - loki_data:/loki
+    command: -config.file=/etc/loki/local-config.yaml
+    deploy:
+      resources:
+        limits:
+          cpus: "${LOKI_CPU_LIMIT}"
+          memory: ${LOKI_MEMORY_LIMIT}
+    networks: [observability]
+
+  grafana:
+    image: grafana/grafana:${GRAFANA_VERSION}
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${GRAFANA_PORT}:3000"  # bind localhost — dùng SSH tunnel hoặc reverse proxy
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - grafana_data:/var/lib/grafana
+    environment:
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
+      - GF_AUTH_DISABLE_LOGIN_FORM=true
+    depends_on:
+      - loki
+    deploy:
+      resources:
+        limits:
+          cpus: "${GRAFANA_CPU_LIMIT}"
+          memory: ${GRAFANA_MEMORY_LIMIT}
+    networks: [observability]
+
+volumes:
+  loki_data:
+  grafana_data:

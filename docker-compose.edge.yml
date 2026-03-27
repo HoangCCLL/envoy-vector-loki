@@ -1,0 +1,54 @@
+# Edge stack — 1 Envoy + 1 Vector per node
+# Deploy: make edge-up NODE=us  (hoặc NODE=na, NODE=eu, ...)
+# Network: join vào envoy_observability (tạo bởi docker-compose.center.yml)
+
+networks:
+  observability:
+    external: true
+    name: envoy_observability
+
+services:
+
+  envoy:
+    image: envoyproxy/envoy:${ENVOY_VERSION}
+    container_name: envoy-${NODE_NAME}
+    restart: unless-stopped
+    ports:
+      - "${HTTP_PORT}:10000"
+      - "${HTTPS_PORT}:10443"
+      - "127.0.0.1:${ADMIN_PORT}:9901"   # admin chỉ localhost — không expose public
+    volumes:
+      - ./envoy/envoy.yaml:/etc/envoy/envoy.yaml:ro
+      - ${CERTS_PATH}:/certs:ro
+    labels:
+      logging_jobname: "envoy-${NODE_NAME}"
+    logging:
+      driver: "json-file"
+      options:
+        mode: "non-blocking"   # không bao giờ block Envoy vì logging
+        max-buffer-size: "4m"
+        max-size: "10m"
+        max-file: "3"
+    networks: [observability]
+
+  vector:
+    image: timberio/vector:${VECTOR_VERSION}
+    container_name: vector-${NODE_NAME}
+    restart: on-failure        # tự restart nếu crash — không ảnh hưởng Envoy
+    environment:
+      - ENVOY_INSTANCE=envoy-${NODE_NAME}
+      - LOKI_ENDPOINT=${LOKI_ENDPOINT}
+    volumes:
+      - ./vector/vector.toml:/etc/vector/vector.toml:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - vector_data:/var/lib/vector
+    command: --config /etc/vector/vector.toml
+    deploy:
+      resources:
+        limits:
+          cpus: "${VECTOR_CPU_LIMIT}"
+          memory: ${VECTOR_MEMORY_LIMIT}
+    networks: [observability]
+
+volumes:
+  vector_data:  # scoped per node bởi -p envoy-{NODE} trong EDGE_FLAGS

@@ -1,0 +1,67 @@
+# Persistent checkpoint dir — survives Vector restarts, prevents duplicate/missing logs
+data_dir = "/var/lib/vector"
+
+# ── Sources ───────────────────────────────────────────────────────────────────
+# ENVOY_INSTANCE env var được set từ docker-compose (envoy-us / envoy-na / ...)
+# Mỗi Vector chỉ đọc container Envoy của chính nó, không đọc lẫn instance khác.
+[sources.envoy_container]
+type = "docker_logs"
+docker_host = "unix:///var/run/docker.sock"
+include_labels = ["logging_jobname=${ENVOY_INSTANCE}"]
+
+# ── Transforms ────────────────────────────────────────────────────────────────
+[transforms.parse_access_log]
+type = "remap"
+inputs = ["envoy_container"]
+source = '''
+  parsed, err = parse_json(.message)
+  if err != null || !exists(parsed.response_code) {
+    abort
+  }
+  # container_name = "envoy-us" / "envoy-na" — dùng làm instance label trong Loki
+  .instance       = to_string(.container_name) ?? "${ENVOY_INSTANCE}"
+  .path           = to_string(parsed.path) ?? "/"
+  .method         = to_string(parsed.method) ?? "-"
+  .response_code  = to_string(to_int(parsed.response_code) ?? 0)
+  .duration_ms    = to_int(parsed.duration_ms) ?? 0
+  .source_service   = to_string(parsed.source_service) ?? "-"
+  .upstream_host    = to_string(parsed.upstream_host) ?? "-"
+  .upstream         = to_string(parsed.upstream_cluster) ?? "-"
+  .bytes_sent       = to_int(parsed.bytes_sent) ?? 0
+  .bytes_received   = to_int(parsed.bytes_received) ?? 0
+  .protocol         = to_string(parsed.protocol) ?? "-"
+  .response_flags   = to_string(parsed.response_flags) ?? "-"
+  .timestamp      = to_string(parsed.timestamp) ?? ""
+  del(.message)
+  del(.container_created_at)
+  del(.container_id)
+  del(.container_image)
+  del(.container_name)
+  del(.label)
+  del(.source_type)
+  del(.stream)
+'''
+
+# ── Sinks ─────────────────────────────────────────────────────────────────────
+[sinks.loki]
+type = "loki"
+inputs = ["parse_access_log"]
+endpoint = "${LOKI_ENDPOINT}"
+compression = "snappy"
+
+  [sinks.loki.labels]
+  job            = "envoy"
+  instance       = "{{ instance }}"    # envoy-us / envoy-na
+  method         = "{{ method }}"
+  response_code  = "{{ response_code }}"
+  source_service = "{{ source_service }}"
+  upstream       = "{{ upstream }}"    # httpbin / binance-spot / ...
+
+  # Memory buffer: absorb spikes, drop newest when full — never backpressures Envoy
+  [sinks.loki.buffer]
+  type       = "memory"
+  max_events = 50000
+  when_full  = "drop_newest"
+
+  [sinks.loki.encoding]
+  codec = "json"

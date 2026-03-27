@@ -1,0 +1,31 @@
+# Danh sách 3rd-party upstreams
+#
+# Naming convention:
+#   - 1 endpoint duy nhất:   tên provider          →  httpbin, coingecko
+#   - Nhiều endpoint cùng provider: {provider}-{product}  →  binance-spot, binance-futures
+#
+# Mỗi entry sinh ra:
+#   - 1 route:   /{name}/* → upstream (strip prefix trước khi forward)
+#   - 1 cluster: Envoy cluster kết nối tới host:port
+#   - 1 label:   upstream="{name}" trong Loki
+#
+# Fields:
+#   name   string  — URL prefix và Loki label (chỉ dùng [a-z0-9-])
+#   host   string  — hostname upstream
+#   port   int     — port upstream
+#   tls    bool    — true nếu Envoy dùng HTTPS khi nói chuyện với upstream
+
+- name: httpbin
+  host: httpbin.org
+  port: 443
+  tls: true
+
+- name: binance-spot
+  host: api.binance.com
+  port: 443
+  tls: true
+
+- name: binance-futures
+  host: fapi.binance.com
+  port: 443
+  tls: true
