@@ -51,8 +51,7 @@ static_resources:
                             prefix_rewrite: "/"
                             timeout: 15s
                             host_rewrite_literal: {{ u.host }}
-                          request_headers_to_remove:
-                            - "x-source-service"
+
 {% endfor %}
 
   clusters:

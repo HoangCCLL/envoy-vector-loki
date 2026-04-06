@@ -25,6 +25,7 @@ source = '''
   .response_code  = to_string(to_int(parsed.response_code) ?? 0)
   .duration_ms    = to_int(parsed.duration_ms) ?? 0
   .source_service   = to_string(parsed.source_service) ?? "-"
+  if .source_service == "" { .source_service = "-" }
   .upstream_host    = to_string(parsed.upstream_host) ?? "-"
   .upstream         = to_string(parsed.upstream_cluster) ?? "-"
   .bytes_sent       = to_int(parsed.bytes_sent) ?? 0
