@@ -140,8 +140,9 @@ def build_report(loki_url: str, period: str, top: int, upstream_filter: str | No
 
 # ── Rendering ─────────────────────────────────────────────────────────────────
 
-def _fmt_pairs(pairs: list[tuple], limit: int = 3) -> str:
-    return ", ".join(f"{k} ({v:,})" for k, v in pairs[:limit])
+def _fmt_pairs(pairs: list[tuple], limit: int = 3, skip_empty: bool = False) -> str:
+    filtered = [(k, v) for k, v in pairs if not (skip_empty and not k)]
+    return ", ".join(f"{k} ({v:,})" for k, v in filtered[:limit])
 
 
 def render_markdown(report: list[dict], period: str) -> str:
@@ -153,16 +154,16 @@ def render_markdown(report: list[dict], period: str) -> str:
     for block in report:
         lines += [
             f"## {block['upstream']} — {block['total']:,} calls",
-            f"**Callers:** {_fmt_pairs(block['top_callers']) or '-'}  ",
+            f"**Source Services:** {_fmt_pairs(block['top_callers'], skip_empty=True) or '-'}  ",
             f"**Nodes:**   {_fmt_pairs(block['nodes']) or '-'}",
             "",
-            "| # | Calls | Path | Callers | Status codes |",
-            "|--:|------:|------|---------|--------------|",
+            "| # | Calls | Path | Source Service | Status codes |",
+            "|--:|------:|------|----------------|--------------|",
         ]
         for row in block["paths"]:
             lines.append(
                 f"| {row['rank']} | {row['total']:,} | `{row['path']}` "
-                f"| {_fmt_pairs(row['callers'])} | {_fmt_pairs(row['statuses'])} |"
+                f"| {_fmt_pairs(row['callers'], skip_empty=True) or '-'} | {_fmt_pairs(row['statuses'])} |"
             )
         lines.append("")
     return "\n".join(lines)
