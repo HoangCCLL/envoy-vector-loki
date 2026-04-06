@@ -15,11 +15,9 @@ services:
     restart: unless-stopped
     ports:
       - "${HTTP_PORT}:10000"
-      - "${HTTPS_PORT}:10443"
       - "127.0.0.1:${ADMIN_PORT}:9901"   # admin chỉ localhost — không expose public
     volumes:
       - ./envoy/envoy.yaml:/etc/envoy/envoy.yaml:ro
-      - ${CERTS_PATH}:/certs:ro
     labels:
       logging_jobname: "envoy-${NODE_NAME}"
     logging:

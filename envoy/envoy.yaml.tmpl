@@ -1,6 +1,6 @@
 static_resources:
   listeners:
-    # ── HTTP → redirect to HTTPS ──────────────────────────────────────────────
+    # ── HTTP ─────────────────────────────────────────────────────────────────────
     - name: listener_http
       address:
         socket_address:
@@ -11,44 +11,7 @@ static_resources:
             - name: envoy.filters.network.http_connection_manager
               typed_config:
                 "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
-                stat_prefix: ingress_http_redirect
-                http_filters:
-                  - name: envoy.filters.http.router
-                    typed_config:
-                      "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
-                route_config:
-                  virtual_hosts:
-                    - name: redirect
-                      domains: ["*"]
-                      routes:
-                        - match:
-                            prefix: "/"
-                          redirect:
-                            https_redirect: true
-                            port_redirect: 10443
-
-    # ── HTTPS ─────────────────────────────────────────────────────────────────
-    - name: listener_https
-      address:
-        socket_address:
-          address: 0.0.0.0
-          port_value: 10443
-      filter_chains:
-        - transport_socket:
-            name: envoy.transport_sockets.tls
-            typed_config:
-              "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.DownstreamTlsContext
-              common_tls_context:
-                tls_certificates:
-                  - certificate_chain:
-                      filename: /certs/fullchain.pem
-                    private_key:
-                      filename: /certs/privkey.pem
-          filters:
-            - name: envoy.filters.network.http_connection_manager
-              typed_config:
-                "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
-                stat_prefix: ingress_https
+                stat_prefix: ingress_http
                 access_log:
                   - name: envoy.access_loggers.stdout
                     typed_config:
