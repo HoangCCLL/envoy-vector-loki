@@ -21,22 +21,32 @@ app = FastAPI(title="Envoy Report API", docs_url="/docs")
 
 def _html(report: list[dict], period: str) -> str:
     from datetime import datetime
+    from report import _period_seconds
+
+    now   = datetime.now()
+    t1    = datetime.fromtimestamp(now.timestamp() - _period_seconds(period)).strftime("%Y-%m-%d %H:%M")
+    t2    = now.strftime("%Y-%m-%d %H:%M")
+    title = f"API Report — {t1} → {t2}"
+
+    def fmt_cells(pairs, limit, skip_empty=False):
+        items = [(k, v) for k, v in pairs if not (skip_empty and (not k or k == "-"))][:limit]
+        return "<br>".join(f"{k} ({v:,})" for k, v in items) or "-"
 
     rows = []
     for block in report:
-        nodes_str   = ", ".join(f"{n} ({c:,})" for n, c in block["nodes"][:3])
-        callers_str = ", ".join(f"{s} ({c:,})" for s, c in block["top_callers"][:3] if s and s != "-")
+        nodes_str   = ", ".join(f"{n} ({c:,})" for n, c in block["nodes"])
+        callers_str = ", ".join(f"{s} ({c:,})" for s, c in block["callers"][:3] if s and s != "-")
         rows.append(f"""
         <section>
           <h2>{block['upstream']} <span class="total">{block['total']:,} calls</span></h2>
-          <p><b>Nodes:</b> {nodes_str or '-'} &nbsp;|&nbsp; <b>Source services:</b> {callers_str or '-'}</p>
+          <p><b>Nodes:</b> {nodes_str or '-'} &nbsp;|&nbsp; <b>Top 3 callers:</b> {callers_str or '-'}</p>
           <table>
             <thead><tr><th>#</th><th>Calls</th><th>Path</th><th>Source service</th><th>Status codes</th></tr></thead>
             <tbody>
         """ + "".join(
             f"<tr><td>{r['rank']}</td><td>{r['total']:,}</td><td><code>{r['path']}</code></td>"
-            f"<td>{', '.join(f'{s} ({n:,})' for s,n in r['callers'][:3] if s and s != '-') or '-'}</td>"
-            f"<td>{', '.join(f'{c} ({n:,})' for c,n in r['statuses'][:3]) or '-'}</td></tr>"
+            f"<td>{fmt_cells(r['callers'], 99, skip_empty=True)}</td>"
+            f"<td>{fmt_cells(r['statuses'], 99)}</td></tr>"
             for r in block["paths"]
         ) + "</tbody></table></section>")
 
@@ -45,7 +55,7 @@ def _html(report: list[dict], period: str) -> str:
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>API Report — last {period}</title>
+  <title>{title}</title>
   <style>
     body  {{ font-family: system-ui, sans-serif; max-width: 1100px; margin: 2rem auto; padding: 0 1rem; color: #222; }}
     h1    {{ font-size: 1.4rem; }}
@@ -61,8 +71,7 @@ def _html(report: list[dict], period: str) -> str:
   </style>
 </head>
 <body>
-  <h1>API Report — last {period}</h1>
-  <p style="color:#999;font-size:.85rem">Generated {datetime.now().strftime('%Y-%m-%d %H:%M')}</p>
+  <h1>{title}</h1>
   {''.join(rows) if rows else '<p>No data found.</p>'}
   <footer>Envoy → Loki report</footer>
 </body>
@@ -79,7 +88,7 @@ def health():
 @app.get("/report")
 def report(
     period:   str                                         = Query("1w",   description="1h 1d 1w 4w"),
-    top:      int                                         = Query(10,     ge=1, le=100),
+    top:      int                                         = Query(9999,   ge=1),
     upstream: str | None                                  = Query(None,   description="filter to one upstream"),
     format:   Literal["json", "html", "md", "csv"]       = Query("json", description="response format"),
 ):

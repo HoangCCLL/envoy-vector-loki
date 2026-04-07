@@ -127,18 +127,9 @@ def fetch_report_data(loki_url: str, period: str, upstream_filter: str | None) -
     stream = f'{{job="envoy", upstream="{upstream_filter}"}}' if upstream_filter \
              else '{job="envoy"}'
 
-    # 1. Calls per (upstream, instance) — labels only, safe from series limit
-    nodes_by_upstream: dict[str, dict[str, int]] = defaultdict(dict)
-    for r in loki_query(loki_url, f"sum by (upstream, instance) (count_over_time({stream}[{period}]))", period):
-        up   = r["metric"].get("upstream", "-")
-        node = r["metric"].get("instance", "-")
-        nodes_by_upstream[up][node] = int(r["value"][1])
-
-    # 3+4+5. Path / caller / status — log query + Python aggregation.
-    # `path` is a high-cardinality JSON body field (not a stream label), so
-    # metric queries with sum-by(path) hit Loki's series limit on real traffic.
-    # Instead: fetch raw log lines, paginate, count everything in Python.
+    # All counts derived from raw log lines — consistent, no Loki series-limit issues.
     paths_by_upstream: dict[str, dict[str, int]]            = defaultdict(lambda: defaultdict(int))
+    nodes_by_upstream: dict[str, dict[str, int]]            = defaultdict(lambda: defaultdict(int))
     callers:           dict[str, dict[str, dict[str, int]]] = defaultdict(lambda: defaultdict(lambda: defaultdict(int)))
     statuses:          dict[str, dict[str, dict[str, int]]] = defaultdict(lambda: defaultdict(lambda: defaultdict(int)))
 
@@ -147,11 +138,12 @@ def fetch_report_data(loki_url: str, period: str, upstream_filter: str | None) -
         path = (entry.get("path", "-") or "-").split("?")[0]  # strip query params
         svc  = entry.get("source_service", "-") or "-"
         code = entry.get("response_code",  "-") or "-"
-        paths_by_upstream[up][path] += 1
-        callers[up][path][svc]      += 1
-        statuses[up][path][code]    += 1
+        node = entry.get("instance",       "-") or "-"
+        paths_by_upstream[up][path]  += 1
+        nodes_by_upstream[up][node]  += 1
+        callers[up][path][svc]       += 1
+        statuses[up][path][code]     += 1
 
-    # Derive upstream totals from log-fetch data — consistent with caller/path counts
     upstream_totals: dict[str, int] = defaultdict(int)
     for up, path_map in paths_by_upstream.items():
         upstream_totals[up] = sum(path_map.values())
@@ -205,11 +197,11 @@ def build_report(loki_url: str, period: str, top: int, upstream_filter: str | No
             })
 
         report.append({
-            "upstream":    upstream,
-            "total":       total,
-            "nodes":       sorted(nodes_by_up[upstream].items(),   key=lambda x: x[1], reverse=True),
-            "top_callers": sorted(callers_by_up[upstream].items(), key=lambda x: x[1], reverse=True)[:5],
-            "paths":       paths,
+            "upstream": upstream,
+            "total":    total,
+            "nodes":    sorted(nodes_by_up[upstream].items(),   key=lambda x: x[1], reverse=True),
+            "callers":  sorted(callers_by_up[upstream].items(), key=lambda x: x[1], reverse=True),
+            "paths":    paths,
         })
 
     return report
@@ -217,22 +209,32 @@ def build_report(loki_url: str, period: str, top: int, upstream_filter: str | No
 
 # ── Rendering ─────────────────────────────────────────────────────────────────
 
-def _fmt_pairs(pairs: list[tuple], limit: int = 3, skip_empty: bool = False) -> str:
+def _fmt_pairs(pairs: list[tuple], limit: int = 99, skip_empty: bool = False, compact: bool = False) -> str:
     filtered = [(k, v) for k, v in pairs if not (skip_empty and not k)]
+    if compact:
+        return ", ".join(f"{k}({v:,})" for k, v in filtered[:limit])
     return ", ".join(f"{k} ({v:,})" for k, v in filtered[:limit])
 
 
+def _time_range(period: str) -> tuple[str, str]:
+    """Return (t_start, t_end) formatted strings for the report header."""
+    now   = datetime.now()
+    start = datetime.fromtimestamp(now.timestamp() - _period_seconds(period))
+    fmt   = "%Y-%m-%d %H:%M"
+    return start.strftime(fmt), now.strftime(fmt)
+
+
 def render_markdown(report: list[dict], period: str) -> str:
+    t1, t2 = _time_range(period)
     lines = [
-        f"# API Report — last {period}",
-        f"_Generated {datetime.now().strftime('%Y-%m-%d %H:%M')}_",
+        f"# API Report — {t1} → {t2}",
         "",
     ]
     for block in report:
         lines += [
             f"## {block['upstream']} — {block['total']:,} calls",
-            f"**Source Services:** {_fmt_pairs(block['top_callers'], skip_empty=True) or '-'}  ",
-            f"**Nodes:**   {_fmt_pairs(block['nodes']) or '-'}",
+            f"**Top 3 callers:** {_fmt_pairs(block['callers'], limit=3, skip_empty=True) or '-'}  ",
+            f"**Nodes:** {_fmt_pairs(block['nodes']) or '-'}",
             "",
             "| # | Calls | Path | Source Service | Status codes |",
             "|--:|------:|------|----------------|--------------|",
@@ -240,7 +242,8 @@ def render_markdown(report: list[dict], period: str) -> str:
         for row in block["paths"]:
             lines.append(
                 f"| {row['rank']} | {row['total']:,} | `{row['path']}` "
-                f"| {_fmt_pairs(row['callers'], skip_empty=True) or '-'} | {_fmt_pairs(row['statuses'])} |"
+                f"| {_fmt_pairs(row['callers'], skip_empty=True, compact=True) or '-'} "
+                f"| {_fmt_pairs(row['statuses'], compact=True)} |"
             )
         lines.append("")
     return "\n".join(lines)
@@ -275,7 +278,7 @@ def render_csv(report: list[dict]) -> str:
 def main():
     p = argparse.ArgumentParser(description="Loki access log report — per upstream")
     p.add_argument("--period",   default="1w",                    help="query window: 1h 1d 1w 4w (default: 1w)")
-    p.add_argument("--top",      type=int, default=10,            help="top N paths per upstream (default: 10)")
+    p.add_argument("--top",      type=int, default=9999,          help="top N paths per upstream (default: all)")
     p.add_argument("--upstream", default=None,                    help="filter to 1 upstream: binance-spot, httpbin, ...")
     p.add_argument("--output",   default=None, metavar="FILE",    help="output file (.md or .csv); default stdout")
     p.add_argument("--loki",     default="http://localhost:3100", help="Loki base URL")
