@@ -44,7 +44,8 @@ compactor:
 limits_config:
   ingestion_rate_mb: 16
   ingestion_burst_size_mb: 32
-  retention_period: 720h   # 30 days
+  retention_period: 720h        # 30 days
+  max_entries_limit_per_query: 5000   # allow batch-fetching 5000 log lines per page
 
 ruler:
   alertmanager_url: http://localhost:9093

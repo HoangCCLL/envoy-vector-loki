@@ -11,7 +11,9 @@ Usage:
 import argparse
 import csv
 import io
+import json as _json
 import sys
+import time as _time
 from collections import defaultdict
 from datetime import datetime
 
@@ -33,89 +35,129 @@ def _period_seconds(period: str) -> int:
     raise ValueError(f"Unknown period format: {period!r}")
 
 
-def loki_query(loki_url: str, query: str, period: str = "1w") -> list[dict]:
+def loki_query(loki_url: str, query: str, period: str) -> list[dict]:
     """
-    Run a LogQL metric query and return the result list.
-
-    Uses /query_range so that extracted labels (e.g. `path` from | json) work
-    in `sum by` — the instant /query endpoint rejects those in Loki 2.9.x.
-    step = period so we get a single aggregated data point.
+    Run a LogQL metric query using only stream labels in sum-by (no | json).
+    Uses /query_range with step=period to get one aggregated value per series.
     """
-    import time as _time
     now   = int(_time.time())
     start = now - _period_seconds(period)
     resp  = httpx.get(
         f"{loki_url}/loki/api/v1/query_range",
-        params={"query": query, "start": start, "end": now, "step": f"{period}"},
+        params={"query": query, "start": start, "end": now, "step": period},
         timeout=60,
     )
     if not resp.is_success:
         raise RuntimeError(
             f"Loki {resp.status_code} for query:\n  {query}\nResponse: {resp.text}"
         )
-    # query_range returns "matrix" — each series has multiple (timestamp, value) pairs.
-    # We want the last (highest) value per series, which is the cumulative count.
     results = []
     for series in resp.json()["data"]["result"]:
         if not series["values"]:
             continue
-        # Take the last value (most recent / highest cumulative count)
         _, val = series["values"][-1]
         results.append({"metric": series["metric"], "value": [None, val]})
     return results
+
+
+def loki_log_fetch(loki_url: str, selector: str, period: str, batch: int = 5000) -> list[dict]:
+    """
+    Fetch ALL log lines for `selector` over `period`, paginating backward through time.
+    Returns list of dicts with stream labels + parsed JSON body fields merged.
+
+    This avoids Loki's series-limit entirely: no metric aggregation happens inside
+    Loki — we count everything in Python. Scales to any data size.
+    """
+    now_ns   = int(_time.time() * 1e9)
+    start_ns = now_ns - _period_seconds(period) * 1_000_000_000
+    end_ns   = now_ns
+    entries: list[dict] = []
+
+    while True:
+        resp = httpx.get(
+            f"{loki_url}/loki/api/v1/query_range",
+            params={
+                "query":     selector,
+                "start":     start_ns,
+                "end":       end_ns,
+                "limit":     batch,
+                "direction": "backward",
+            },
+            timeout=120,
+        )
+        if not resp.is_success:
+            raise RuntimeError(f"Loki {resp.status_code}: {resp.text}")
+
+        streams    = resp.json()["data"]["result"]
+        batch_count = 0
+        oldest_ns  = end_ns
+
+        for stream in streams:
+            labels = stream["stream"]
+            for ts_str, line in stream["values"]:
+                ts_ns = int(ts_str)
+                if ts_ns < oldest_ns:
+                    oldest_ns = ts_ns
+                try:
+                    body = _json.loads(line)
+                except _json.JSONDecodeError:
+                    body = {}
+                entries.append({**labels, **body})
+                batch_count += 1
+
+        if batch_count < batch:
+            break  # last page — no more data
+        end_ns = oldest_ns - 1
+        if end_ns <= start_ns:
+            break
+
+    return entries
 
 
 # ── Data fetching ─────────────────────────────────────────────────────────────
 
 def fetch_report_data(loki_url: str, period: str, upstream_filter: str | None) -> dict:
     """
-    Run 5 LogQL queries and return raw aggregated dicts.
-    All queries are label-only where possible (fast); json parse only when path is needed.
+    Fetch all data needed for the report.
+
+    Metric queries (fast, label-only) for upstream totals and node breakdown.
+    Log query + Python aggregation for path/caller/status — avoids Loki's
+    500-series limit regardless of how many unique paths exist.
     """
     stream = f'{{job="envoy", upstream="{upstream_filter}"}}' if upstream_filter \
              else '{job="envoy"}'
 
-    # 1. Total calls per upstream (labels only — fast)
+    # 1. Total calls per upstream — labels only, safe from series limit
     upstream_totals: dict[str, int] = {}
     for r in loki_query(loki_url, f"sum by (upstream) (count_over_time({stream}[{period}]))", period):
         upstream_totals[r["metric"].get("upstream", "-")] = int(r["value"][1])
 
-    # 2. Calls per (upstream, instance/node) (labels only — fast)
-    #    Result: {upstream -> {instance -> count}}
+    # 2. Calls per (upstream, instance) — labels only, safe from series limit
     nodes_by_upstream: dict[str, dict[str, int]] = defaultdict(dict)
     for r in loki_query(loki_url, f"sum by (upstream, instance) (count_over_time({stream}[{period}]))", period):
         up   = r["metric"].get("upstream", "-")
         node = r["metric"].get("instance", "-")
         nodes_by_upstream[up][node] = int(r["value"][1])
 
-    # 3. Calls per (upstream, path) — needs json for path field
-    #    Result: {upstream -> {path -> count}}
-    paths_by_upstream: dict[str, dict[str, int]] = defaultdict(dict)
-    for r in loki_query(loki_url, f"sum by (upstream, path) (count_over_time({stream} | json [{period}]))", period):
-        up   = r["metric"].get("upstream", "-")
-        path = r["metric"].get("path", "-")
-        paths_by_upstream[up][path] = int(r["value"][1])
+    # 3+4+5. Path / caller / status — log query + Python aggregation.
+    # `path` is a high-cardinality JSON body field (not a stream label), so
+    # metric queries with sum-by(path) hit Loki's series limit on real traffic.
+    # Instead: fetch raw log lines, paginate, count everything in Python.
+    paths_by_upstream: dict[str, dict[str, int]]            = defaultdict(lambda: defaultdict(int))
+    callers:           dict[str, dict[str, dict[str, int]]] = defaultdict(lambda: defaultdict(lambda: defaultdict(int)))
+    statuses:          dict[str, dict[str, dict[str, int]]] = defaultdict(lambda: defaultdict(lambda: defaultdict(int)))
 
-    # 4. Calls per (upstream, path, source_service) — needs json
-    #    Result: {upstream -> {path -> {source_service -> count}}}
-    callers: dict[str, dict[str, dict[str, int]]] = defaultdict(lambda: defaultdict(dict))
-    for r in loki_query(loki_url, f"sum by (upstream, path, source_service) (count_over_time({stream} | json [{period}]))", period):
-        up   = r["metric"].get("upstream", "-")
-        path = r["metric"].get("path", "-")
-        svc  = r["metric"].get("source_service", "-")
-        callers[up][path][svc] = int(r["value"][1])
-
-    # 5. Calls per (upstream, path, response_code) — response_code is label, path needs json
-    #    Result: {upstream -> {path -> {response_code -> count}}}
-    statuses: dict[str, dict[str, dict[str, int]]] = defaultdict(lambda: defaultdict(dict))
-    for r in loki_query(loki_url, f"sum by (upstream, path, response_code) (count_over_time({stream} | json [{period}]))", period):
-        up   = r["metric"].get("upstream", "-")
-        path = r["metric"].get("path", "-")
-        code = r["metric"].get("response_code", "-")
-        statuses[up][path][code] = int(r["value"][1])
+    for entry in loki_log_fetch(loki_url, stream, period):
+        up   = entry.get("upstream",       "-")
+        path = entry.get("path",           "-")
+        svc  = entry.get("source_service", "-") or "-"
+        code = entry.get("response_code",  "-") or "-"
+        paths_by_upstream[up][path] += 1
+        callers[up][path][svc]      += 1
+        statuses[up][path][code]    += 1
 
     return {
-        "upstream_totals":  upstream_totals,
+        "upstream_totals":   upstream_totals,
         "nodes_by_upstream": nodes_by_upstream,
         "paths_by_upstream": paths_by_upstream,
         "callers":           callers,
@@ -163,11 +205,11 @@ def build_report(loki_url: str, period: str, top: int, upstream_filter: str | No
             })
 
         report.append({
-            "upstream":      upstream,
-            "total":         total,
-            "nodes":         sorted(nodes_by_up[upstream].items(),     key=lambda x: x[1], reverse=True),
-            "top_callers":   sorted(callers_by_up[upstream].items(),   key=lambda x: x[1], reverse=True)[:5],
-            "paths":         paths,
+            "upstream":    upstream,
+            "total":       total,
+            "nodes":       sorted(nodes_by_up[upstream].items(),   key=lambda x: x[1], reverse=True),
+            "top_callers": sorted(callers_by_up[upstream].items(), key=lambda x: x[1], reverse=True)[:5],
+            "paths":       paths,
         })
 
     return report
