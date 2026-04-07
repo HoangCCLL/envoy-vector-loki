@@ -127,12 +127,7 @@ def fetch_report_data(loki_url: str, period: str, upstream_filter: str | None) -
     stream = f'{{job="envoy", upstream="{upstream_filter}"}}' if upstream_filter \
              else '{job="envoy"}'
 
-    # 1. Total calls per upstream — labels only, safe from series limit
-    upstream_totals: dict[str, int] = {}
-    for r in loki_query(loki_url, f"sum by (upstream) (count_over_time({stream}[{period}]))", period):
-        upstream_totals[r["metric"].get("upstream", "-")] = int(r["value"][1])
-
-    # 2. Calls per (upstream, instance) — labels only, safe from series limit
+    # 1. Calls per (upstream, instance) — labels only, safe from series limit
     nodes_by_upstream: dict[str, dict[str, int]] = defaultdict(dict)
     for r in loki_query(loki_url, f"sum by (upstream, instance) (count_over_time({stream}[{period}]))", period):
         up   = r["metric"].get("upstream", "-")
@@ -155,6 +150,11 @@ def fetch_report_data(loki_url: str, period: str, upstream_filter: str | None) -
         paths_by_upstream[up][path] += 1
         callers[up][path][svc]      += 1
         statuses[up][path][code]    += 1
+
+    # Derive upstream totals from log-fetch data — consistent with caller/path counts
+    upstream_totals: dict[str, int] = defaultdict(int)
+    for up, path_map in paths_by_upstream.items():
+        upstream_totals[up] = sum(path_map.values())
 
     return {
         "upstream_totals":   upstream_totals,
