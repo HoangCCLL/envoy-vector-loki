@@ -149,7 +149,7 @@ def fetch_report_data(loki_url: str, period: str, upstream_filter: str | None) -
 
     for entry in loki_log_fetch(loki_url, stream, period):
         up   = entry.get("upstream",       "-")
-        path = entry.get("path",           "-")
+        path = (entry.get("path", "-") or "-").split("?")[0]  # strip query params
         svc  = entry.get("source_service", "-") or "-"
         code = entry.get("response_code",  "-") or "-"
         paths_by_upstream[up][path] += 1
