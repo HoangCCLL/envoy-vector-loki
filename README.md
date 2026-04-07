@@ -33,7 +33,9 @@ vector/vector.toml            # Vector pipeline config
 upstreams.yaml                # Danh sách 3rd-party upstreams (routing + clusters)
 render.py                     # Render envoy.yaml từ template + upstreams.yaml
 Makefile                      # Entry point
-report/report.py              # Report script
+report/report.py              # Report logic (query Loki, render)
+report/api.py                 # FastAPI HTTP wrapper — GET /report
+report/Dockerfile             # Build image cho report-api service
 
 envs/
   base.env                    # Shared config: image versions, ports, resource limits
@@ -61,6 +63,7 @@ make help     # xem tất cả lệnh
 | envoy-na admin | http://localhost:9902    |
 | Loki           | http://localhost:3100    |
 | Grafana        | http://localhost:3000    |
+| Report API     | http://localhost:5000    |
 
 ---
 
@@ -145,6 +148,32 @@ Xong. Không cần sửa `docker-compose.edge.yml`.
 ## Report
 
 Top paths per upstream, breakdown theo caller (X-Source-Service) và envoy node.
+
+### HTTP API (report-api service — chạy cùng center)
+
+```bash
+# JSON (default)
+curl "http://localhost:5000/report?period=1d"
+
+# HTML — mở trong browser
+curl "http://localhost:5000/report?period=1w&format=html" -o report.html
+
+# Markdown
+curl "http://localhost:5000/report?period=1w&format=md"
+
+# CSV download
+curl "http://localhost:5000/report?period=1d&format=csv" -o report.csv
+
+# Filter upstream + top N
+curl "http://localhost:5000/report?period=1w&upstream=binance-spot&top=20&format=html" -o report.html
+
+# Swagger UI
+open http://localhost:5000/docs
+```
+
+Query params: `period` (1h/1d/1w/4w), `top` (1–100, default 10), `upstream` (optional), `format` (json/html/md/csv).
+
+### CLI (make)
 
 ```bash
 make report                              # tất cả upstreams, last 1w, top 10
