@@ -20,14 +20,49 @@ import httpx
 
 # ── Loki ─────────────────────────────────────────────────────────────────────
 
-def loki_query(loki_url: str, query: str) -> list[dict]:
-    resp = httpx.get(
-        f"{loki_url}/loki/api/v1/query",
-        params={"query": query},
-        timeout=30,
+_PERIOD_TO_SECONDS = {
+    "h": 3600, "d": 86400, "w": 604800,
+}
+
+
+def _period_seconds(period: str) -> int:
+    """Convert e.g. '1h', '4w', '1d' → seconds."""
+    for suffix, secs in _PERIOD_TO_SECONDS.items():
+        if period.endswith(suffix):
+            return int(period[:-1]) * secs
+    raise ValueError(f"Unknown period format: {period!r}")
+
+
+def loki_query(loki_url: str, query: str, period: str = "1w") -> list[dict]:
+    """
+    Run a LogQL metric query and return the result list.
+
+    Uses /query_range so that extracted labels (e.g. `path` from | json) work
+    in `sum by` — the instant /query endpoint rejects those in Loki 2.9.x.
+    step = period so we get a single aggregated data point.
+    """
+    import time as _time
+    now   = int(_time.time())
+    start = now - _period_seconds(period)
+    resp  = httpx.get(
+        f"{loki_url}/loki/api/v1/query_range",
+        params={"query": query, "start": start, "end": now, "step": f"{period}"},
+        timeout=60,
     )
-    resp.raise_for_status()
-    return resp.json()["data"]["result"]
+    if not resp.is_success:
+        raise RuntimeError(
+            f"Loki {resp.status_code} for query:\n  {query}\nResponse: {resp.text}"
+        )
+    # query_range returns "matrix" — each series has multiple (timestamp, value) pairs.
+    # We want the last (highest) value per series, which is the cumulative count.
+    results = []
+    for series in resp.json()["data"]["result"]:
+        if not series["values"]:
+            continue
+        # Take the last value (most recent / highest cumulative count)
+        _, val = series["values"][-1]
+        results.append({"metric": series["metric"], "value": [None, val]})
+    return results
 
 
 # ── Data fetching ─────────────────────────────────────────────────────────────
@@ -42,13 +77,13 @@ def fetch_report_data(loki_url: str, period: str, upstream_filter: str | None) -
 
     # 1. Total calls per upstream (labels only — fast)
     upstream_totals: dict[str, int] = {}
-    for r in loki_query(loki_url, f"sum by (upstream) (count_over_time({stream}[{period}]))"):
+    for r in loki_query(loki_url, f"sum by (upstream) (count_over_time({stream}[{period}]))", period):
         upstream_totals[r["metric"].get("upstream", "-")] = int(r["value"][1])
 
     # 2. Calls per (upstream, instance/node) (labels only — fast)
     #    Result: {upstream -> {instance -> count}}
     nodes_by_upstream: dict[str, dict[str, int]] = defaultdict(dict)
-    for r in loki_query(loki_url, f"sum by (upstream, instance) (count_over_time({stream}[{period}]))"):
+    for r in loki_query(loki_url, f"sum by (upstream, instance) (count_over_time({stream}[{period}]))", period):
         up   = r["metric"].get("upstream", "-")
         node = r["metric"].get("instance", "-")
         nodes_by_upstream[up][node] = int(r["value"][1])
@@ -56,7 +91,7 @@ def fetch_report_data(loki_url: str, period: str, upstream_filter: str | None) -
     # 3. Calls per (upstream, path) — needs json for path field
     #    Result: {upstream -> {path -> count}}
     paths_by_upstream: dict[str, dict[str, int]] = defaultdict(dict)
-    for r in loki_query(loki_url, f"sum by (upstream, path) (count_over_time({stream} | json [{period}]))"):
+    for r in loki_query(loki_url, f"sum by (upstream, path) (count_over_time({stream} | json [{period}]))", period):
         up   = r["metric"].get("upstream", "-")
         path = r["metric"].get("path", "-")
         paths_by_upstream[up][path] = int(r["value"][1])
@@ -64,7 +99,7 @@ def fetch_report_data(loki_url: str, period: str, upstream_filter: str | None) -
     # 4. Calls per (upstream, path, source_service) — needs json
     #    Result: {upstream -> {path -> {source_service -> count}}}
     callers: dict[str, dict[str, dict[str, int]]] = defaultdict(lambda: defaultdict(dict))
-    for r in loki_query(loki_url, f"sum by (upstream, path, source_service) (count_over_time({stream} | json [{period}]))"):
+    for r in loki_query(loki_url, f"sum by (upstream, path, source_service) (count_over_time({stream} | json [{period}]))", period):
         up   = r["metric"].get("upstream", "-")
         path = r["metric"].get("path", "-")
         svc  = r["metric"].get("source_service", "-")
@@ -73,7 +108,7 @@ def fetch_report_data(loki_url: str, period: str, upstream_filter: str | None) -
     # 5. Calls per (upstream, path, response_code) — response_code is label, path needs json
     #    Result: {upstream -> {path -> {response_code -> count}}}
     statuses: dict[str, dict[str, dict[str, int]]] = defaultdict(lambda: defaultdict(dict))
-    for r in loki_query(loki_url, f"sum by (upstream, path, response_code) (count_over_time({stream} | json [{period}]))"):
+    for r in loki_query(loki_url, f"sum by (upstream, path, response_code) (count_over_time({stream} | json [{period}]))", period):
         up   = r["metric"].get("upstream", "-")
         path = r["metric"].get("path", "-")
         code = r["metric"].get("response_code", "-")

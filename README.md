@@ -7,7 +7,7 @@ Design goal: logging không bao giờ block Envoy, kể cả khi traffic spike. 
 ```
 [Edge]  envoy-us + vector-us  ──┐
         envoy-na + vector-na  ──┤── envoy_observability (Docker network)
-        envoy-eu + vector-eu  ──┘             │
+        envoy-<name> + vector-<name>  ──┘      │
         ...                                [Center]
                                        loki + grafana
 ```
@@ -37,7 +37,7 @@ report/report.py              # Report script
 
 envs/
   base.env                    # Shared config: image versions, ports, resource limits
-  us-edge.env                 # Node US: NODE_NAME, HTTP_PORT, HTTPS_PORT, ADMIN_PORT
+  us-edge.env                 # Node US: NODE_NAME, HTTP_PORT, ADMIN_PORT
   na-edge.env                 # Node NA
   <name>-edge.env             # Thêm node mới: tạo file này là xong
 ```
@@ -55,8 +55,8 @@ make help     # xem tất cả lệnh
 
 | Service        | URL                     |
 |----------------|-------------------------|
-| envoy-us HTTPS | https://localhost:10443  |
-| envoy-na HTTPS | https://localhost:10444  |
+| envoy-us HTTP  | http://localhost:10000   |
+| envoy-na HTTP  | http://localhost:10001   |
 | envoy-us admin | http://localhost:9901    |
 | envoy-na admin | http://localhost:9902    |
 | Loki           | http://localhost:3100    |
@@ -69,9 +69,9 @@ make help     # xem tất cả lệnh
 Mỗi upstream được khai báo trong `upstreams.yaml`. Envoy route theo path prefix:
 
 ```
-https://envoy:10443/httpbin/*         → https://httpbin.org/*
-https://envoy:10443/binance-spot/*    → https://api.binance.com/*
-https://envoy:10443/binance-futures/* → https://fapi.binance.com/*
+http://envoy:10000/httpbin/*         → https://httpbin.org/*
+http://envoy:10000/binance-spot/*    → https://api.binance.com/*
+http://envoy:10000/binance-futures/* → https://fapi.binance.com/*
 ```
 
 Prefix bị strip trước khi forward. `X-Source-Service` bị strip sau khi log.
@@ -98,13 +98,14 @@ Tên này đồng thời là URL prefix và Loki label `upstream`.
 
 ---
 
-## TLS flows
+## TLS flows (upstream)
+
+Envoy lắng nghe HTTP:10000 và forward lên upstream theo cấu hình `tls` trong `upstreams.yaml`:
 
 | Client → Envoy | Envoy → Upstream | Config |
 |---|---|---|
-| HTTP:10000 | — | Envoy trả 301 redirect, không proxy |
-| HTTPS:10443 (TLS terminate) | HTTP | `tls: false` trong upstreams.yaml |
-| HTTPS:10443 (TLS terminate) | HTTPS (TLS originate) | `tls: true` trong upstreams.yaml |
+| HTTP:10000 | HTTP | `tls: false` trong upstreams.yaml |
+| HTTP:10000 | HTTPS (TLS originate) | `tls: true` trong upstreams.yaml |
 
 ---
 
@@ -128,7 +129,6 @@ Tên này đồng thời là URL prefix và Loki label `upstream`.
 ```bash
 NODE_NAME=eu
 HTTP_PORT=10002
-HTTPS_PORT=10445
 ADMIN_PORT=9903
 ```
 
@@ -158,10 +158,10 @@ Output mẫu:
 
 ```
 ## binance-spot — 12,450 calls
-Callers: order-svc (8,200), frontend (4,250)
-Nodes:   envoy-us (9,100), envoy-na (3,350)
+**Source Services:** order-svc (8,200), frontend (4,250)
+**Nodes:**   envoy-us (9,100), envoy-na (3,350)
 
-| # | Calls | Path                        | Callers                      | Status codes        |
+| # | Calls | Path                        | Source Service               | Status codes        |
 |--:|------:|-----------------------------|------------------------------|---------------------|
 | 1 | 4,821 | /api/v3/ticker/price        | order-svc (4,800)            | 200 (4,800), 429 (21) |
 | 2 | 2,103 | /api/v3/order               | order-svc (2,103)            | 201 (2,090), 400 (13) |
@@ -211,5 +211,5 @@ quantile_over_time(0.99, {job="envoy", upstream="binance-spot"} | json | unwrap 
 Clients thêm `X-Source-Service: <tên service>` vào request. Envoy log rồi strip trước khi forward upstream. Vector dùng làm Loki label.
 
 ```bash
-curl https://localhost:10443/httpbin/get -H "X-Source-Service: order-svc"
+curl http://localhost:10000/httpbin/get -H "X-Source-Service: order-svc"
 ```

@@ -12,3 +12,4 @@ envoy/envoy.yaml
 
 # Local env overrides
 .env.local
+/.claude
