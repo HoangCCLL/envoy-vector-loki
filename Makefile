@@ -44,7 +44,7 @@ down:
 	$(MAKE) center-down
 
 center-up:
-	docker compose --env-file envs/base.env -f docker-compose.center.yml up -d
+	docker compose --env-file envs/base.env -f docker-compose.center.yml up -d --build
 
 center-down:
 	docker compose --env-file envs/base.env -f docker-compose.center.yml down
