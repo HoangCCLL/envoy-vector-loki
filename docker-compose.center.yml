@@ -49,7 +49,7 @@ services:
     container_name: report-api
     restart: unless-stopped
     ports:
-      - "127.0.0.1:${REPORT_PORT}:5000"
+      - "${REPORT_PORT}:5000"
     environment:
       - LOKI_ENDPOINT=http://loki:3100
     depends_on:
