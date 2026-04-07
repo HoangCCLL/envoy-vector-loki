@@ -33,6 +33,8 @@ Both join the `envoy_observability` Docker network.
 | `envs/<node>-edge.env` | Per-node config: NODE_NAME, HTTP_PORT, HTTPS_PORT, ADMIN_PORT |
 | `Makefile` | Single entry point for all operations |
 | `report/report.py` | Query Loki and render top-API report |
+| `report/api.py` | FastAPI service — HTTP wrapper around report.py |
+| `report/Dockerfile` | Build image for report-api service |
 
 ## Common Commands
 
@@ -59,10 +61,11 @@ Create `envs/<name>-edge.env` with `NODE_NAME`, `HTTP_PORT`, `HTTPS_PORT`, `ADMI
 
 | Service | URL |
 |---------|-----|
-| Envoy US | https://localhost:10443 |
-| Envoy NA | https://localhost:10444 |
+| Envoy US | http://localhost:10000 |
+| Envoy NA | http://localhost:10001 |
 | Loki API | http://localhost:3100 |
 | Grafana  | http://localhost:3000 |
+| Report API | http://localhost:5000 |
 
 ## X-Source-Service
 

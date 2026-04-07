@@ -44,6 +44,23 @@ services:
           memory: ${GRAFANA_MEMORY_LIMIT}
     networks: [observability]
 
+  report-api:
+    build: ./report
+    container_name: report-api
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${REPORT_PORT}:5000"
+    environment:
+      - LOKI_ENDPOINT=http://loki:3100
+    depends_on:
+      - loki
+    deploy:
+      resources:
+        limits:
+          cpus: "${REPORT_CPU_LIMIT}"
+          memory: ${REPORT_MEMORY_LIMIT}
+    networks: [observability]
+
 volumes:
   loki_data:
   grafana_data:
